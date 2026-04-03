@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Magic Meadow: Strong Wind & Transitions</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Magic Meadow: Cross-Platform (PC & Mobile)</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
@@ -16,6 +16,10 @@
             background-color: #000;
             font-family: 'Segoe UI', 'Roboto', sans-serif;
             color: white;
+            touch-action: none; 
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
         }
 
         video { display: none; }
@@ -24,6 +28,8 @@
             display: block;
             width: 100vw;
             height: 100vh;
+            touch-action: none; 
+            cursor: crosshair; /* 提示电脑端用户可以点击 */
         }
 
         .ui-panel {
@@ -31,28 +37,62 @@
             top: 25px;
             left: 50%;
             transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.4);
+            background: rgba(0, 0, 0, 0.5);
             backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
             padding: 12px 30px;
             border-radius: 50px;
             text-align: center;
             border: 1px solid rgba(255, 255, 255, 0.2);
             box-shadow: 0 4px 15px rgba(0,0,0,0.4);
-            pointer-events: none;
+            pointer-events: none; 
             z-index: 100;
+            width: max-content;
+            max-width: 90vw;
         }
 
-        #status { font-weight: bold; font-size: 1.1rem; margin-bottom: 2px; }
-        #instructions { font-size: 0.85rem; opacity: 0.9; }
+        #status { font-weight: bold; font-size: 1.1rem; margin-bottom: 4px; }
+        #instructions { font-size: 0.85rem; opacity: 0.9; line-height: 1.4; }
         #mode-display { font-size: 0.85rem; color: #ffd700; margin-top: 6px; font-weight: bold; letter-spacing: 0.5px;}
+        
+        #mode-btn {
+            margin-top: 10px;
+            padding: 8px 20px;
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            color: #fff;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            pointer-events: auto; 
+            backdrop-filter: blur(5px);
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #mode-btn:hover { background: rgba(255, 255, 255, 0.3); }
+        #mode-btn:active { transform: scale(0.95); }
+
+        /* 移动端/小屏幕适配 */
+        @media (max-width: 600px) {
+            .ui-panel { top: 15px; padding: 10px 15px; border-radius: 25px; }
+            #status { font-size: 0.95rem; }
+            #instructions { font-size: 0.75rem; }
+            #mode-btn { padding: 6px 16px; font-size: 0.85rem; }
+        }
     </style>
 </head>
 <body>
 
     <div class="ui-panel">
-        <div id="status">Magic Meadow is initializing...</div>
-        <div id="instructions">✋ Blow seeds | ✊ Regenerate | ✌️ Strong Wind</div>
+        <div id="status">Magic Meadow initializing...</div>
+        <div id="instructions">
+            ✋ Hand | 👆 Click/Tap: Blow seeds<br>
+            ✌️ Peace | ✌️ 2-Fingers/Right-Click: Wind
+        </div>
         <div id="mode-display">Mode: Loading...</div>
+        <button id="mode-btn">Switch Environment</button>
     </div>
 
     <canvas id="canvas"></canvas>
@@ -64,6 +104,7 @@
         const ctx = canvas.getContext('2d');
         const statusText = document.getElementById('status');
         const modeDisplay = document.getElementById('mode-display');
+        const modeBtn = document.getElementById('mode-btn');
 
         let width, height;
         let dandelions = [];
@@ -73,18 +114,21 @@
         let fireflies = [];
         let butterflies = [];
         
-        // --- GESTURE & WIND STATE ---
+        // --- STATE VARIABLES ---
         let isHandOpen = false;
         let isStrongWind = false;
-        let wasStrongWind = false; // Tracks when the wind gesture stops
+        let wasStrongWind = false; 
         let currentWindForce = 0; 
         let globalTime = 0;
+        let isInteracting = false; // 记录是否正在进行物理交互（触摸/鼠标）
 
-        const TOTAL_DANDELIONS = 100; 
+        // 根据屏幕宽度决定渲染数量（平衡PC和手机性能）
+        const isMobile = window.innerWidth < 600;
+        const TOTAL_DANDELIONS = isMobile ? 60 : 100; 
         const TOTAL_LAYERS = 8; 
-        const BUTTERFLY_COUNT = 8;
+        const BUTTERFLY_COUNT = isMobile ? 4 : 8;
 
-        // --- PALETTES [R, G, B, A] for Smooth Interpolation ---
+        // --- PALETTES ---
         const palettes = {
             day: {
                 skyTop: [77, 169, 255, 1], skyBottom: [135, 206, 235, 1],
@@ -116,33 +160,21 @@
         const autoStates = ['day', 'sunset', 'night', 'sunset'];
         let lastAutoSwitchTime = 0;
         const AUTO_CYCLE_TIME_MS = 30000; 
-
-        const MODE_LABELS = ["Manual: Day ☀️", "Manual: Sunset 🌇", "Manual: Night 🌙", "Auto Cycle ⏳"];
+        const MODE_LABELS = ["☀️ Day", "🌇 Sunset", "🌙 Night", "⏳ Auto"];
 
         // --- TRANSITION PLUGIN ---
         class SceneTransitionPlugin {
-            constructor() {
-                this.active = false;
-                this.alpha = 0;
-                this.color = [255, 255, 255];
-                this.phase = 0;
-            }
+            constructor() { this.active = false; this.alpha = 0; this.color = [255, 255, 255]; this.phase = 0; }
             trigger(modeName) {
-                this.active = true;
-                this.phase = 0;
-                // Match the flash overlay color to the vibe of the incoming mode
+                this.active = true; this.phase = 0;
                 if (modeName === 'day') this.color = [255, 255, 255];
                 else if (modeName === 'sunset') this.color = [255, 160, 100];
                 else if (modeName === 'night') this.color = [10, 10, 20];
             }
             render(ctx, width, height) {
                 if (!this.active) return;
-                this.phase += 0.025; // Transition speed
-                if (this.phase >= Math.PI) {
-                    this.active = false;
-                    return;
-                }
-                // Sine wave fade-in and fade-out
+                this.phase += 0.035; 
+                if (this.phase >= Math.PI) { this.active = false; return; }
                 this.alpha = Math.sin(this.phase) * 0.45; 
                 ctx.fillStyle = `rgba(${this.color[0]}, ${this.color[1]}, ${this.color[2]}, ${this.alpha})`;
                 ctx.fillRect(0, 0, width, height);
@@ -153,36 +185,89 @@
         function updateModeUI() {
             let label = MODE_LABELS[appMode];
             if(appMode === 3) label += ` (${targetModeName.toUpperCase()})`;
-            modeDisplay.textContent = `[Press 'M' to Switch] ${label}`;
+            modeDisplay.textContent = `${label}`;
         }
 
-        window.addEventListener('keydown', (e) => {
-            if (e.code === 'KeyM') {
-                appMode = (appMode + 1) % 4; 
-                if (appMode === 0) targetModeName = 'day';
-                else if (appMode === 1) targetModeName = 'sunset';
-                else if (appMode === 2) targetModeName = 'night';
-                else if (appMode === 3) {
-                    autoStateIndex = 0;
-                    targetModeName = autoStates[autoStateIndex];
-                    lastAutoSwitchTime = performance.now();
-                }
-                updateModeUI();
-                transitionPlugin.trigger(targetModeName); // Trigger plugin effect
+        modeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            appMode = (appMode + 1) % 4; 
+            if (appMode === 0) targetModeName = 'day';
+            else if (appMode === 1) targetModeName = 'sunset';
+            else if (appMode === 2) targetModeName = 'night';
+            else if (appMode === 3) {
+                autoStateIndex = 0; targetModeName = autoStates[autoStateIndex]; lastAutoSwitchTime = performance.now();
             }
+            updateModeUI();
+            transitionPlugin.trigger(targetModeName);
         });
 
-        function toRgba(arr) {
-            return `rgba(${arr[0]}, ${arr[1]}, ${arr[2]}, ${arr[3]})`;
+        // ==========================================
+        // 跨平台交互逻辑 (PC 鼠标 + 手机触摸)
+        // ==========================================
+
+        // 屏蔽画布默认右键菜单
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        function handleInteractStart(isStrong) {
+            isInteracting = true; // 锁定 AI
+            if (isStrong) {
+                isStrongWind = true; wasStrongWind = true;
+                statusText.textContent = "Interact: Strong Wind! 💨";
+            } else {
+                isHandOpen = true; isStrongWind = false;
+                statusText.textContent = "Interact: Blowing seeds! 👆";
+            }
+            dandelions.forEach(d => d.blowSeeds());
         }
+
+        function handleInteractEnd() {
+            isInteracting = false; // 释放锁，允许 AI 接管
+            isHandOpen = false; isStrongWind = false;
+            if (wasStrongWind) wasStrongWind = false;
+            statusText.textContent = "Released. Regenerating... 🌱";
+            dandelions.forEach(d => d.regenerateSeeds());
+        }
+
+        // PC端鼠标事件
+        canvas.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const isRightClick = e.button === 2; // 判断是否右键
+            handleInteractStart(isRightClick);
+        });
+        canvas.addEventListener('mouseup', (e) => {
+            e.preventDefault();
+            handleInteractEnd();
+        });
+
+        // 移动端触摸事件
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const isMultiTouch = e.touches.length > 1; // 双指判断强风
+            handleInteractStart(isMultiTouch);
+        }, { passive: false });
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (e.touches.length > 1 && !isStrongWind) {
+                handleInteractStart(true); // 移动过程中变成双指，转为强风
+            }
+        }, { passive: false });
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (e.touches.length === 0) handleInteractEnd();
+        }, { passive: false });
+
+
+        // ==========================================
+        // 渲染与核心动画逻辑
+        // ==========================================
+
+        function toRgba(arr) { return `rgba(${arr[0]}, ${arr[1]}, ${arr[2]}, ${arr[3]})`; }
 
         function updateTransitions() {
             const t = 0.015; 
             const target = palettes[targetModeName];
             for (let key in currentPalette) {
-                for(let i=0; i<4; i++) {
-                    currentPalette[key][i] += (target[key][i] - currentPalette[key][i]) * t;
-                }
+                for(let i=0; i<4; i++) currentPalette[key][i] += (target[key][i] - currentPalette[key][i]) * t;
             }
             sunOp += ((targetModeName === 'day' ? 1 : 0) - sunOp) * t;
             sunsetOp += ((targetModeName === 'sunset' ? 1 : 0) - sunsetOp) * t;
@@ -198,13 +283,9 @@
         }
         window.addEventListener('resize', resize);
 
-        // --- CELESTIALS ---
         function drawSun() {
             if (sunOp < 0.01) return;
-            ctx.save();
-            ctx.globalAlpha = sunOp;
-            ctx.shadowBlur = 50;
-            ctx.shadowColor = "#FFFACD";
+            ctx.save(); ctx.globalAlpha = sunOp; ctx.shadowBlur = 50; ctx.shadowColor = "#FFFACD";
             ctx.beginPath(); ctx.arc(100, 100, 45, 0, Math.PI * 2); ctx.fillStyle = "rgba(255, 250, 200, 0.4)"; ctx.fill();
             ctx.beginPath(); ctx.arc(100, 100, 40, 0, Math.PI * 2); ctx.fillStyle = "#F7E08A"; ctx.fill();
             ctx.restore();
@@ -212,10 +293,7 @@
 
         function drawSunsetSun() {
             if (sunsetOp < 0.01) return;
-            ctx.save();
-            ctx.globalAlpha = sunsetOp;
-            ctx.shadowBlur = 60;
-            ctx.shadowColor = "#FF6347";
+            ctx.save(); ctx.globalAlpha = sunsetOp; ctx.shadowBlur = 60; ctx.shadowColor = "#FF6347";
             ctx.beginPath(); ctx.arc(150, height * 0.5, 60, 0, Math.PI * 2); ctx.fillStyle = "rgba(255, 150, 100, 0.5)"; ctx.fill();
             ctx.beginPath(); ctx.arc(150, height * 0.5, 55, 0, Math.PI * 2); ctx.fillStyle = "#FF8C00"; ctx.fill();
             ctx.restore();
@@ -223,46 +301,27 @@
 
         function drawMoon() {
             if (moonOp < 0.01) return;
-            ctx.save();
-            ctx.globalAlpha = moonOp;
-            ctx.shadowBlur = 40;
-            ctx.shadowColor = "#ADD8E6";
+            ctx.save(); ctx.globalAlpha = moonOp; ctx.shadowBlur = 40; ctx.shadowColor = "#ADD8E6";
             ctx.beginPath(); ctx.arc(120, 120, 35, 0, Math.PI * 2); ctx.fillStyle = "#f0f8ff"; ctx.fill();
             ctx.globalCompositeOperation = 'destination-out';
             ctx.beginPath(); ctx.arc(135, 110, 35, 0, Math.PI * 2); ctx.fillStyle = "black"; ctx.fill();
             ctx.restore();
         }
 
-        // --- WANDERING ENTITIES ---
         class WanderingEntity {
             constructor() {
-                this.x = Math.random() * width;
-                this.y = height * 0.7 + Math.random() * (height * 0.3); 
-                this.vx = (Math.random() - 0.5) * 1.5;
-                this.vy = (Math.random() - 0.5) * 1.5;
-                this.speed = 0.05 + Math.random() * 0.05; 
-                this.phase = Math.random() * Math.PI * 2;
+                this.x = Math.random() * width; this.y = height * 0.7 + Math.random() * (height * 0.3); 
+                this.vx = (Math.random() - 0.5) * 1.5; this.vy = (Math.random() - 0.5) * 1.5;
+                this.speed = 0.05 + Math.random() * 0.05; this.phase = Math.random() * Math.PI * 2;
                 this.windOpacity = 1.0; 
             }
             update() {
-                this.vx += (Math.random() - 0.5) * 0.15;
-                this.vy += (Math.random() - 0.5) * 0.15;
-                this.vx = Math.max(-1.5, Math.min(1.5, this.vx));
-                this.vy = Math.max(-1.5, Math.min(1.5, this.vy));
-                this.x += this.vx;
-                this.y += this.vy;
-
-                if (this.x < 0) this.x = width;
-                if (this.x > width) this.x = 0;
-                if (this.y < height * 0.65) this.vy += 0.2; 
-                if (this.y > height) this.vy -= 0.2; 
-
-                // Disappear during strong wind, reappear when it stops
-                if (isStrongWind) {
-                    this.windOpacity = Math.max(0, this.windOpacity - 0.05);
-                } else {
-                    this.windOpacity = Math.min(1, this.windOpacity + 0.02);
-                }
+                this.vx += (Math.random() - 0.5) * 0.15; this.vy += (Math.random() - 0.5) * 0.15;
+                this.vx = Math.max(-1.5, Math.min(1.5, this.vx)); this.vy = Math.max(-1.5, Math.min(1.5, this.vy));
+                this.x += this.vx; this.y += this.vy;
+                if (this.x < 0) this.x = width; if (this.x > width) this.x = 0;
+                if (this.y < height * 0.65) this.vy += 0.2; if (this.y > height) this.vy -= 0.2; 
+                this.windOpacity = isStrongWind ? Math.max(0, this.windOpacity - 0.05) : Math.min(1, this.windOpacity + 0.02);
             }
         }
 
@@ -271,18 +330,14 @@
             draw() {
                 if (moonOp < 0.01 || this.windOpacity <= 0) return; 
                 const alpha = (0.2 + 0.8 * Math.abs(Math.sin(globalTime * this.speed + this.phase))) * moonOp * this.windOpacity;
-                ctx.save();
-                ctx.globalAlpha = alpha;
-                ctx.shadowBlur = 12; ctx.shadowColor = "#ccff00"; ctx.fillStyle = "#e6ff66";
-                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
-                ctx.restore();
+                ctx.save(); ctx.globalAlpha = alpha; ctx.shadowBlur = 12; ctx.shadowColor = "#ccff00"; ctx.fillStyle = "#e6ff66";
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill(); ctx.restore();
             }
         }
 
         class Butterfly extends WanderingEntity {
             constructor() {
-                super();
-                this.size = Math.random() * 3 + 2; 
+                super(); this.size = Math.random() * 3 + 2; 
                 const colors = ['#FF6347', '#1E90FF', '#FFD700', '#FF1493'];
                 this.color = colors[Math.floor(Math.random() * colors.length)];
                 this.wingPhaseSpeed = 0.1 + Math.random() * 0.2;
@@ -291,17 +346,10 @@
                 const dayAlpha = Math.min(1, sunOp + sunsetOp) * this.windOpacity;
                 if (dayAlpha < 0.01) return;
                 const wingSway = Math.abs(Math.sin(globalTime * this.wingPhaseSpeed + this.phase));
-                
-                ctx.save();
-                ctx.globalAlpha = dayAlpha;
-                ctx.fillStyle = this.color;
-                
-                const wingWidth = this.size * 2 * wingSway;
-                const wingHeight = this.size;
-                
+                ctx.save(); ctx.globalAlpha = dayAlpha; ctx.fillStyle = this.color;
+                const wingWidth = this.size * 2 * wingSway; const wingHeight = this.size;
                 ctx.beginPath(); ctx.ellipse(this.x - wingWidth/2, this.y, wingWidth/2, wingHeight, 0, 0, Math.PI * 2); ctx.fill();
                 ctx.beginPath(); ctx.ellipse(this.x + wingWidth/2, this.y, wingWidth/2, wingHeight, 0, 0, Math.PI * 2); ctx.fill();
-                
                 ctx.fillStyle = '#333';
                 ctx.beginPath(); ctx.ellipse(this.x, this.y, this.size * 0.2, this.size, 0, 0, Math.PI * 2); ctx.fill();
                 ctx.restore();
@@ -321,7 +369,6 @@
             }
         }
 
-        // --- FLORA & ENVIRONMENT ---
         class Cloud {
             constructor() { this.reset(true); }
             reset(initial = false) {
@@ -332,106 +379,63 @@
                 this.circles = []; 
                 const num = 5 + Math.floor(Math.random() * 4);
                 for (let i = 0; i < num; i++) {
-                    this.circles.push({
-                        relX: (i * 30 - (num * 15)) * this.scale,
-                        relY: (Math.random() * 20 - 10) * this.scale,
-                        r: (20 + Math.random() * 30) * this.scale
-                    });
+                    this.circles.push({ relX: (i * 30 - (num * 15)) * this.scale, relY: (Math.random() * 20 - 10) * this.scale, r: (20 + Math.random() * 30) * this.scale });
                 }
             }
             update() {
-                // Clouds move much faster rightward if there is strong wind
                 this.x += this.speed + (currentWindForce * 0.15);
                 if (this.x - (150 * this.scale) > width) this.reset();
             }
             draw() {
-                ctx.fillStyle = toRgba(currentPalette.cloudTint);
-                ctx.beginPath();
-                this.circles.forEach(c => {
-                    ctx.moveTo(this.x + c.relX + c.r, this.y + c.relY);
-                    ctx.arc(this.x + c.relX, this.y + c.relY, c.r, 0, Math.PI * 2);
-                });
+                ctx.fillStyle = toRgba(currentPalette.cloudTint); ctx.beginPath();
+                this.circles.forEach(c => { ctx.moveTo(this.x + c.relX + c.r, this.y + c.relY); ctx.arc(this.x + c.relX, this.y + c.relY, c.r, 0, Math.PI * 2); });
                 ctx.fill();
             }
         }
 
         class Dandelion {
             constructor(layerIndex) {
-                const MEADOW_TOP = height * 0.7;
-                const MEADOW_HEIGHT = height - MEADOW_TOP;
+                const MEADOW_TOP = height * 0.7; const MEADOW_HEIGHT = height - MEADOW_TOP;
                 const depthBandHeight = MEADOW_HEIGHT / TOTAL_LAYERS;
-                const bandMinY = MEADOW_TOP + (layerIndex * depthBandHeight);
-                const bandMaxY = bandMinY + depthBandHeight;
+                const bandMinY = MEADOW_TOP + (layerIndex * depthBandHeight); const bandMaxY = bandMinY + depthBandHeight;
 
-                this.baseX = Math.random() * width;
-                this.baseY = bandMinY + Math.random() * (bandMaxY - bandMinY);
+                this.baseX = Math.random() * width; this.baseY = bandMinY + Math.random() * (bandMaxY - bandMinY);
                 const depthNormalized = layerIndex / (TOTAL_LAYERS - 1);
                 this.headScale = 0.3 + (depthNormalized * 1.5); 
                 
-                this.stemHeight = (80 + Math.random() * 60) * this.headScale; 
-                this.stemThickness = (3 + Math.random() * 3) * this.headScale; 
-                this.swayPhase = Math.random() * Math.PI * 2;
-                this.swaySpeed = 0.01 + Math.random() * 0.01;
+                this.stemHeight = (80 + Math.random() * 60) * this.headScale; this.stemThickness = (3 + Math.random() * 3) * this.headScale; 
+                this.swayPhase = Math.random() * Math.PI * 2; this.swaySpeed = 0.01 + Math.random() * 0.01;
                 this.swayAmount = (10 + Math.random() * 20) * this.headScale; 
 
-                this.headX = this.baseX;
-                this.headY = this.baseY - this.stemHeight;
-                this.hasSeeds = true;
-                this.seedScale = 1.0; 
-                this.seedPattern = this.generateSeedPattern();
+                this.headX = this.baseX; this.headY = this.baseY - this.stemHeight;
+                this.hasSeeds = true; this.seedScale = 1.0; this.seedPattern = this.generateSeedPattern();
             }
-
             generateSeedPattern() {
-                let pattern = [];
-                let numSeeds = (50 + Math.random() * 40) * this.headScale; 
+                let pattern = []; let numSeeds = (50 + Math.random() * 40) * this.headScale; 
                 for(let i = 0; i < numSeeds; i++) {
-                    pattern.push({
-                        angle: Math.random() * Math.PI * 2,
-                        dist: Math.random() * 35 * this.headScale,
-                        size: (1.5 + Math.random() * 1.5) * this.headScale
-                    });
+                    pattern.push({ angle: Math.random() * Math.PI * 2, dist: Math.random() * 35 * this.headScale, size: (1.5 + Math.random() * 1.5) * this.headScale });
                 }
                 return pattern;
             }
-
             update() {
                 let sway = Math.sin(globalTime * this.swaySpeed + this.swayPhase) * this.swayAmount;
-                // Strong wind violently pushes stems to the right
                 this.headX = this.baseX + sway + (currentWindForce * this.headScale);
                 this.headY = this.baseY - this.stemHeight + Math.abs(sway * 0.1) + (currentWindForce * 0.2 * this.headScale); 
-
-                if (this.hasSeeds && this.seedScale < 1.0) {
-                    this.seedScale += 0.04;
-                    if (this.seedScale > 1.0) this.seedScale = 1.0;
-                }
+                if (this.hasSeeds && this.seedScale < 1.0) { this.seedScale += 0.04; if (this.seedScale > 1.0) this.seedScale = 1.0; }
             }
-
             draw() {
-                ctx.beginPath();
-                ctx.moveTo(this.baseX, this.baseY);
-                ctx.quadraticCurveTo(this.baseX, this.baseY - this.stemHeight / 2, this.headX, this.headY);
-                ctx.strokeStyle = toRgba(currentPalette.stem); 
-                ctx.lineWidth = this.stemThickness;
-                ctx.lineCap = "round";
-                ctx.stroke();
-
-                ctx.beginPath();
-                ctx.arc(this.headX, this.headY, 4 * this.headScale, 0, Math.PI * 2);
-                ctx.fillStyle = toRgba(currentPalette.head); 
-                ctx.fill();
-
+                ctx.beginPath(); ctx.moveTo(this.baseX, this.baseY); ctx.quadraticCurveTo(this.baseX, this.baseY - this.stemHeight / 2, this.headX, this.headY);
+                ctx.strokeStyle = toRgba(currentPalette.stem); ctx.lineWidth = this.stemThickness; ctx.lineCap = "round"; ctx.stroke();
+                ctx.beginPath(); ctx.arc(this.headX, this.headY, 4 * this.headScale, 0, Math.PI * 2); ctx.fillStyle = toRgba(currentPalette.head); ctx.fill();
                 if (this.hasSeeds && this.seedScale > 0) {
                     ctx.fillStyle = toRgba(currentPalette.seed); 
                     this.seedPattern.forEach(seed => {
                         let sx = this.headX + Math.cos(seed.angle) * (seed.dist * this.seedScale);
                         let sy = this.headY + Math.sin(seed.angle) * (seed.dist * this.seedScale);
-                        ctx.beginPath();
-                        ctx.arc(sx, sy, seed.size * this.seedScale, 0, Math.PI * 2);
-                        ctx.fill();
+                        ctx.beginPath(); ctx.arc(sx, sy, seed.size * this.seedScale, 0, Math.PI * 2); ctx.fill();
                     });
                 }
             }
-
             blowSeeds() {
                 if (!this.hasSeeds) return;
                 this.hasSeeds = false;
@@ -441,11 +445,9 @@
                     driftingSeeds.push(new DriftingSeed(startX, startY, seed.size * this.seedScale));
                 });
             }
-
             regenerateSeeds() {
                 if (this.hasSeeds) return;
-                this.hasSeeds = true;
-                this.seedScale = 0.0; 
+                this.hasSeeds = true; this.seedScale = 0.0; 
             }
         }
 
@@ -455,23 +457,17 @@
                 this.vx = (Math.random() - 0.2) * 6; this.vy = (Math.random() - 0.7) * 6; 
             }
             update() {
-                // Wind pushes seeds significantly faster along X axis
-                this.vx += 0.04 + Math.random() * 0.03 + (currentWindForce * 0.008); 
-                this.vy -= 0.03 + Math.random() * 0.03; 
-                this.vx *= 0.95; this.vy *= 0.95;
-                this.x += this.vx; this.y += this.vy;
-                this.opacity -= 0.004; 
-                if (this.x > width || this.y < 0) this.opacity -= 0.02;
+                this.vx += 0.04 + Math.random() * 0.03 + (currentWindForce * 0.008); this.vy -= 0.03 + Math.random() * 0.03; 
+                this.vx *= 0.95; this.vy *= 0.95; this.x += this.vx; this.y += this.vy;
+                this.opacity -= 0.004; if (this.x > width || this.y < 0) this.opacity -= 0.02;
             }
             draw() {
-                if (this.opacity <= 0) return;
-                let c = currentPalette.seed;
+                if (this.opacity <= 0) return; let c = currentPalette.seed;
                 ctx.fillStyle = `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${c[3] * this.opacity})`;
                 ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
             }
         }
 
-        // --- INITIALIZATION & LOOP ---
         function initMeadow() {
             dandelions = []; driftingSeeds = []; clouds = []; stars = []; fireflies = []; butterflies = [];
             for (let layer = 0; layer < TOTAL_LAYERS; layer++) {
@@ -487,49 +483,38 @@
 
         function drawBackground() {
             const skyGrd = ctx.createLinearGradient(0, 0, 0, height * 0.7);
-            skyGrd.addColorStop(0, toRgba(currentPalette.skyTop)); 
-            skyGrd.addColorStop(1, toRgba(currentPalette.skyBottom)); 
+            skyGrd.addColorStop(0, toRgba(currentPalette.skyTop)); skyGrd.addColorStop(1, toRgba(currentPalette.skyBottom)); 
             ctx.fillStyle = skyGrd; ctx.fillRect(0, 0, width, height * 0.7);
 
-            stars.forEach(s => s.draw());
-            drawSun(); drawSunsetSun(); drawMoon();
+            stars.forEach(s => s.draw()); drawSun(); drawSunsetSun(); drawMoon();
             clouds.forEach(c => { c.update(); c.draw(); });
 
-            ctx.beginPath();
-            ctx.moveTo(0, height * 0.7);
+            ctx.beginPath(); ctx.moveTo(0, height * 0.7);
             ctx.bezierCurveTo(width * 0.25, height * 0.55, width * 0.4, height * 0.65, width * 0.5, height * 0.6);
             ctx.bezierCurveTo(width * 0.75, height * 0.5, width * 0.8, height * 0.7, width, height * 0.55);
             ctx.lineTo(width, height * 0.7); ctx.lineTo(0, height * 0.7);
             ctx.fillStyle = toRgba(currentPalette.hills); ctx.fill();
 
             const meadowGrd = ctx.createLinearGradient(0, height * 0.7, 0, height);
-            meadowGrd.addColorStop(0, toRgba(currentPalette.meadowTop)); 
-            meadowGrd.addColorStop(1, toRgba(currentPalette.meadowBottom)); 
+            meadowGrd.addColorStop(0, toRgba(currentPalette.meadowTop)); meadowGrd.addColorStop(1, toRgba(currentPalette.meadowBottom)); 
             ctx.fillStyle = meadowGrd; ctx.fillRect(0, height * 0.7, width, height * 0.3);
         }
 
         function animate(timestamp) {
             globalTime++;
-            
-            // Auto Cycle Logic
             if (appMode === 3) {
                 if (!lastAutoSwitchTime) lastAutoSwitchTime = timestamp;
                 if (timestamp - lastAutoSwitchTime >= AUTO_CYCLE_TIME_MS) {
                     autoStateIndex = (autoStateIndex + 1) % autoStates.length;
-                    targetModeName = autoStates[autoStateIndex];
-                    lastAutoSwitchTime = timestamp;
-                    updateModeUI();
-                    transitionPlugin.trigger(targetModeName); // Trigger plugin effect
+                    targetModeName = autoStates[autoStateIndex]; lastAutoSwitchTime = timestamp;
+                    updateModeUI(); transitionPlugin.trigger(targetModeName);
                 }
             }
 
-            // Smooth Wind Transition (Easing)
             const windTarget = isStrongWind ? 120 : 0;
             currentWindForce += (windTarget - currentWindForce) * 0.05;
 
-            updateTransitions();
-            ctx.clearRect(0, 0, width, height);
-            drawBackground();
+            updateTransitions(); ctx.clearRect(0, 0, width, height); drawBackground();
 
             dandelions.sort((a, b) => a.baseY - b.baseY);
             dandelions.forEach(d => { d.update(); d.draw(); });
@@ -542,108 +527,82 @@
             fireflies.forEach(f => { f.update(); f.draw(); });
             butterflies.forEach(b => { b.update(); b.draw(); });
 
-            // Render transition effect on top of everything
             transitionPlugin.render(ctx, width, height);
-
             requestAnimationFrame(animate);
         }
 
-        resize(); 
-        requestAnimationFrame(animate); 
+        resize(); requestAnimationFrame(animate); 
 
-        // --- MEDIAPIPE GESTURE TRACKING ---
+        // ==========================================
+        // AI 摄像头逻辑 (MediaPipe Hands)
+        // ==========================================
         const hands = new Hands({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
 
         hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.75,
-            minTrackingConfidence: 0.75
+            maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.75, minTrackingConfidence: 0.75
         });
 
         hands.onResults((results) => {
+            // 如果用户正在使用鼠标或触摸屏，暂停 AI 手势控制
+            if (isInteracting) return; 
+
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                 const landmarks = results.multiHandLandmarks[0];
-                const wrist = landmarks[0];
-                const tip8 = landmarks[8]; 
+                const wrist = landmarks[0]; const tip8 = landmarks[8]; 
                 
-                // Euclidean distance helper
                 const d = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y);
-                
-                // Determine if specific fingers are extended
                 const indexUp = d(landmarks[8], wrist) > d(landmarks[5], wrist) * 1.3;
                 const middleUp = d(landmarks[12], wrist) > d(landmarks[9], wrist) * 1.3;
                 const ringUp = d(landmarks[16], wrist) > d(landmarks[13], wrist) * 1.3;
                 const pinkyUp = d(landmarks[20], wrist) > d(landmarks[17], wrist) * 1.3;
 
-                // Peace Sign Logic: Index & Middle UP, Ring & Pinky DOWN
                 const isPeace = indexUp && middleUp && !ringUp && !pinkyUp;
-                
-                // Original Open Hand Logic (overridden if peace sign is active)
-                const dist = d(tip8, wrist);
-                const currentGestureOpen = dist > 0.4 && !isPeace; 
+                const dist = d(tip8, wrist); const currentGestureOpen = dist > 0.4 && !isPeace; 
 
-                // Resolve States
                 if (isPeace) {
-                    isStrongWind = true;
-                    wasStrongWind = true; // Mark that wind occurred
-                    statusText.textContent = "Peace Sign! Strong wind dispersing seeds! 💨";
-                    isHandOpen = false; 
-                    
-                    // Automatically disperse all seeds into the strong wind!
-                    dandelions.forEach(d => d.blowSeeds());
-                    
+                    isStrongWind = true; wasStrongWind = true;
+                    statusText.textContent = "Camera: Peace Sign! 💨";
+                    isHandOpen = false; dandelions.forEach(d => d.blowSeeds());
                 } else {
                     isStrongWind = false; 
-                    
-                    // Return everything to original state when gesture drops
                     if (wasStrongWind) {
                         wasStrongWind = false;
-                        statusText.textContent = "Wind stopped. Regenerating meadow...";
+                        statusText.textContent = "Wind stopped. Regenerating... 🌱";
                         dandelions.forEach(d => d.regenerateSeeds());
                     }
 
                     if (currentGestureOpen && !isHandOpen) {
-                        isHandOpen = true;
-                        statusText.textContent = "Blowing seeds with Open Hand! ✋";
+                        isHandOpen = true; statusText.textContent = "Camera: Open Hand! ✋";
                         dandelions.forEach(d => d.blowSeeds());
                     } else if (!currentGestureOpen && isHandOpen) {
-                        isHandOpen = false;
-                        statusText.textContent = "Regenerating with Closed Fist! ✊";
+                        isHandOpen = false; statusText.textContent = "Camera: Closed Fist! ✊";
                         dandelions.forEach(d => d.regenerateSeeds());
                     } else if (!currentGestureOpen && !isHandOpen) {
-                        statusText.textContent = "AI Detecting Hand... Show a gesture!";
+                        statusText.textContent = "AI Ready. Show your hand!";
                     }
                 }
             } else {
                 isStrongWind = false; 
-                
-                if (wasStrongWind) {
-                    wasStrongWind = false;
-                    statusText.textContent = "Meadow resting... Regenerating dandelions.";
-                    dandelions.forEach(d => d.regenerateSeeds());
-                } else if (isHandOpen) {
-                    isHandOpen = false;
-                    statusText.textContent = "Meadow resting... Regenerating dandelions.";
+                if (wasStrongWind || isHandOpen) {
+                    wasStrongWind = false; isHandOpen = false;
+                    statusText.textContent = "Meadow resting... Regenerating 🌱";
                     dandelions.forEach(d => d.regenerateSeeds());
                 } else {
-                    statusText.textContent = "AI Ready. Show your hand! 👋";
+                    statusText.textContent = "Camera Ready. Interact freely! 👋";
                 }
             }
         });
 
+        // 统一摄像头设置，默认使用前置
         const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                await hands.send({image: videoElement});
-            },
-            width: 640,
-            height: 480
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480, facingMode: 'user' 
         });
 
         camera.start().then(() => {
-            statusText.textContent = "Meadow Ready. Show your hand!👋";
+            statusText.textContent = "Ready! Show hand or click/touch! ✨";
         });
 
     </script>
